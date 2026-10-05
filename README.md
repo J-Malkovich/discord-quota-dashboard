@@ -75,3 +75,14 @@ tools use) with `SEND_MESSAGES` in the target channels.
 - Quota availability depends entirely on what `agent.account_usage` can fetch for
   the credential actually configured (e.g. Anthropic quota needs an OAuth
   Claude.ai Pro/Max login, not a bare API key).
+- **The in-process `refresh_minutes` timer (`ctx.spawn_task`) is unreliable
+  under Hermes' default `plugins.isolation: host`.** Third-party plugins run in
+  a separate host subprocess there, and a spawned background task gets
+  attributed to "the request being served" at spawn time — which finishes
+  right after plugin load, so the loop's `ctx.*` calls silently stop working
+  on its very first tick. Confirmed by direct testing: the CLI command always
+  works; the in-process timer does not survive past ~60s in host-isolation
+  mode. **Until that's fixed upstream, don't rely on `refresh_minutes` — run
+  `hermes quota-dashboard` from an external loop instead** (cron, systemd
+  timer, or a simple `while true; do hermes quota-dashboard; sleep 60; done`).
+  It costs nothing but a few HTTP calls either way.
