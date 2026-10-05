@@ -15,7 +15,7 @@ config.yaml:
 Then enable it:  hermes plugins enable discord-quota-dashboard
 
 Manual refresh:  /quota_dashboard   (in any chat)
-                 hermes quota-dashboard refresh   (CLI)
+                 hermes quota-dashboard             (CLI)
 """
 from __future__ import annotations
 
