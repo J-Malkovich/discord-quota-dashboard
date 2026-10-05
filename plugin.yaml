@@ -1,0 +1,12 @@
+name: discord-quota-dashboard
+version: "0.1.0"
+description: >
+  Posts and live-updates an AI usage/quota dashboard message in Discord channels
+  and threads. Targets are config-driven (not hardcoded): a static channel list
+  plus optional auto-discovery of every active thread under one or more parent
+  channels, so new threads get picked up automatically.
+requires_env:
+  - DISCORD_BOT_TOKEN
+provides_tools:
+  - discord_send_message
+  - discord_edit_message
