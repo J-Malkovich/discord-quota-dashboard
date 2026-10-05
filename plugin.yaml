@@ -1,5 +1,5 @@
 name: discord-quota-dashboard
-version: "0.1.0"
+version: "0.2.0"
 description: >
   Posts and live-updates an AI usage/quota dashboard message in Discord channels
   and threads. Targets are config-driven (not hardcoded): a static channel list

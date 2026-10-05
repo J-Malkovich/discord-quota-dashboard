@@ -16,10 +16,14 @@ Then enable it:  hermes plugins enable discord-quota-dashboard
 
 Manual refresh:  /quota_dashboard   (in any chat)
                  hermes quota-dashboard             (CLI)
+
+The background cadence runs as a detached OS-level loop (not an in-process
+asyncio task — see core.ensure_loop_running's docstring for why), started from
+register() and self-healing: it relaunches automatically on every gateway or
+container restart, no manual step required.
 """
 from __future__ import annotations
 
-import asyncio
 import logging
 
 from . import core
@@ -71,20 +75,8 @@ def register(ctx):
         minutes = 15
 
     if minutes > 0:
-        async def _loop():
-            while True:
-                await asyncio.sleep(max(60, minutes * 60))
-                try:
-                    await asyncio.get_event_loop().run_in_executor(None, core.refresh_all, ctx)
-                except asyncio.CancelledError:
-                    raise
-                except Exception:
-                    logger.exception("discord-quota-dashboard: background refresh failed")
-
-        coro = _loop()
         try:
-            ctx.spawn_task(coro, name="discord-quota-dashboard-refresh")
-        except RuntimeError:
-            # No running event loop (e.g. a one-shot CLI load) — cron/manual refresh still works.
-            coro.close()
-            logger.debug("discord-quota-dashboard: no event loop; background refresh disabled.")
+            status = core.ensure_loop_running(minutes * 60)
+            logger.info("discord-quota-dashboard: external refresh loop %s", status)
+        except Exception:
+            logger.exception("discord-quota-dashboard: failed to start external refresh loop")

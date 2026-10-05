@@ -6,10 +6,13 @@ from __future__ import annotations
 import json
 import logging
 import os
+import shutil
+import subprocess
 import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
@@ -193,3 +196,90 @@ def refresh_all(ctx) -> str:
         results.append(f"{channel_id}: ok")
     ctx.state.set("messages", state)
     return "\n".join(results)
+
+
+# ── self-healing external loop ──────────────────────────────────────────────
+# ctx.spawn_task's background task does not survive Hermes' default
+# `plugins.isolation: host` (third-party plugins run in a separate host
+# subprocess; a spawned task is tied to the request being served at spawn
+# time, which ends right after plugin load). Instead of an in-process asyncio
+# loop, this launches a detached OS-level loop that just re-invokes the CLI
+# command on a timer — independent of the plugin host's lifecycle entirely.
+# register() runs again on every gateway/container start, so calling this
+# from register() makes the loop self-healing across restarts with no manual
+# step: it notices the old process is gone (new container/pid namespace) and
+# starts a fresh one.
+def _loop_dir() -> Path:
+    try:
+        from hermes_constants import get_hermes_home
+        d = get_hermes_home() / "plugin-data" / "discord-quota-dashboard"
+    except Exception:
+        import tempfile
+        d = Path(tempfile.gettempdir()) / "discord-quota-dashboard"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
+
+
+def ensure_loop_running(interval_seconds: int) -> str:
+    """Idempotent: start the external refresh loop iff no live instance is already
+    tracked by the pidfile. Safe to call on every register() — a reload without a
+    full restart just finds the existing pid still alive and does nothing."""
+    d = _loop_dir()
+    pid_file = d / "loop.pid"
+    log_file = d / "loop.log"
+    existing: Optional[int] = None
+    if pid_file.exists():
+        try:
+            existing = int(pid_file.read_text().strip())
+        except Exception:
+            existing = None
+    if existing and _pid_alive(existing):
+        return f"already running (pid {existing})"
+
+    hermes_bin = shutil.which("hermes") or "hermes"
+    interval = max(60, int(interval_seconds))
+    script = (
+        f'while true; do "{hermes_bin}" quota-dashboard >> "{log_file}" 2>&1; '
+        f'sleep {interval}; done'
+    )
+    proc = subprocess.Popen(
+        ["/bin/sh", "-c", script],
+        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        start_new_session=True,  # detach from the plugin host's process group/session
+        close_fds=True,
+    )
+    pid_file.write_text(str(proc.pid))
+    return f"started (pid {proc.pid}, every {interval}s, log: {log_file})"
+
+
+def stop_loop() -> str:
+    """Stop the external loop if one is tracked and alive (best-effort cleanup)."""
+    import signal
+    pid_file = _loop_dir() / "loop.pid"
+    if not pid_file.exists():
+        return "not running"
+    try:
+        pid = int(pid_file.read_text().strip())
+    except Exception:
+        pid_file.unlink(missing_ok=True)
+        return "not running (bad pidfile, removed)"
+    if not _pid_alive(pid):
+        pid_file.unlink(missing_ok=True)
+        return "not running (stale pidfile, removed)"
+    try:
+        os.killpg(pid, signal.SIGTERM)
+    except OSError:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except OSError:
+            pass
+    pid_file.unlink(missing_ok=True)
+    return f"stopped (pid {pid})"
